@@ -6,6 +6,7 @@ import uuid
 import shutil
 import tarfile
 import zipfile
+import threading
 import urllib.request
 import subprocess
 from pathlib import Path
@@ -24,6 +25,11 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 ARCHIVE_EXTENSIONS = {".zip", ".apk", ".jar", ".war", ".tar.gz", ".tgz", ".tar"}
+
+# In-memory dictionary tracking live scan progress
+# scan_id: { "percent": int, "stage": str, "detail": str, "done": bool, "error": str, "pdf_bytes": bytes }
+active_scans = {}
+scans_lock = threading.Lock()
 
 def clean_ansi(text: str) -> str:
     """Strips terminal ANSI color and formatting escape sequences."""
@@ -272,7 +278,6 @@ Trivy Results:
             "stream": False
         }).encode("utf-8")
 
-        # Explicitly use 127.0.0.1 (IPv4) to avoid IPv6 loopback connection refused errors
         ollama_req = urllib.request.Request(
             "http://127.0.0.1:11434/api/generate",
             data=req_data,
@@ -292,6 +297,113 @@ Trivy Results:
     if not ai_generated:
         marp_content = generate_deterministic_marp_report(workspace_dir.name, trivy_json)
         output_md_path.write_text(marp_content, encoding="utf-8")
+
+def update_scan_progress(scan_id: str, percent: int, stage: str, detail: str):
+    """Thread-safe update of scan progress attributes."""
+    with scans_lock:
+        if scan_id in active_scans:
+            active_scans[scan_id]["percent"] = percent
+            active_scans[scan_id]["stage"] = stage
+            active_scans[scan_id]["detail"] = detail
+
+def execute_pipeline(scan_id: str, saved_upload_path: Path):
+    """Worker execution routine for the complete SAST pipeline."""
+    scan_workspace = UPLOAD_DIR / f"workspace_{scan_id}"
+    trivy_report_path = OUTPUT_DIR / f"trivy-report-{scan_id}.json"
+    global_trivy_report = OUTPUT_DIR / "trivy-report.json"
+    markdown_report_path = OUTPUT_DIR / f"SECURITY_REPORT_{scan_id}.md"
+    pdf_report_path = OUTPUT_DIR / f"SECURITY_REPORT_{scan_id}.pdf"
+
+    try:
+        # Step 1: Workspace Sandbox Preparation
+        update_scan_progress(scan_id, 25, "Unpacking & Sandbox Setup", "Extracting files into an isolated analysis sandbox...")
+        prepare_target_directory(saved_upload_path, scan_workspace)
+
+        # Step 2: Binary Resolution
+        update_scan_progress(scan_id, 35, "Verifying Scanner Engine", "Confirming Aqua Trivy scanner and signatures...")
+        trivy_bin = ensure_trivy()
+
+        # Step 3: Aqua Security Trivy Scan
+        update_scan_progress(scan_id, 50, "Aqua Trivy Static Scan", "Scanning code, dependencies, secrets, and IaC configurations...")
+        trivy_cmd = [
+            trivy_bin,
+            "fs",
+            "--scanners", "vuln,misconfig,secret",
+            "--format", "json",
+            "--output", str(trivy_report_path),
+            str(scan_workspace)
+        ]
+        res = subprocess.run(trivy_cmd, capture_output=True, text=True)
+        if res.returncode != 0:
+            trivy_cmd_legacy = [
+                trivy_bin,
+                "fs",
+                "--security-checks", "vuln,config,secret",
+                "--format", "json",
+                "--output", str(trivy_report_path),
+                str(scan_workspace)
+            ]
+            subprocess.run(trivy_cmd_legacy, check=True, capture_output=True, text=True)
+
+        shutil.copy2(trivy_report_path, global_trivy_report)
+
+        # Step 4: AI Context Analysis & Patch Synthesis
+        update_scan_progress(scan_id, 75, "AI Context & Remediation Engine", "Qwen 2.5 Coder validating CVEs, filtering false positives, and crafting patches...")
+        run_ai_analysis(scan_workspace, trivy_report_path, markdown_report_path)
+
+        if not markdown_report_path.exists():
+            raise FileNotFoundError("Security markdown report was not produced.")
+
+        # Step 5: Marp Slide Presentation & PDF Rendering
+        update_scan_progress(scan_id, 90, "Marp PDF Compilation", "Marp CLI rendering executive presentation slides into PDF...")
+        npx_bin = resolve_binary("npx", ["/usr/local/bin/npx", "/usr/bin/npx"])
+        marp_bin = resolve_binary("marp", ["/usr/local/bin/marp", "/usr/bin/marp"])
+        if shutil.which(marp_bin) or (Path(marp_bin).is_file() and os.access(marp_bin, os.X_OK)):
+            marp_cmd = [marp_bin, str(markdown_report_path), "--pdf", "--allow-local-files", "-o", str(pdf_report_path)]
+        else:
+            marp_cmd = [npx_bin, "@marp-team/marp-cli", str(markdown_report_path), "--pdf", "--allow-local-files", "-o", str(pdf_report_path)]
+
+        subprocess.run(marp_cmd, check=True, capture_output=True, text=True)
+
+        if not pdf_report_path.exists():
+            raise FileNotFoundError("Marp CLI failed to compile outputs/SECURITY_REPORT.pdf")
+
+        # Read PDF into memory buffer
+        with open(pdf_report_path, "rb") as f:
+            pdf_bytes = f.read()
+
+        with scans_lock:
+            if scan_id in active_scans:
+                active_scans[scan_id]["percent"] = 100
+                active_scans[scan_id]["stage"] = "Audit Complete"
+                active_scans[scan_id]["detail"] = "Report compiled successfully. Initiating download..."
+                active_scans[scan_id]["pdf_bytes"] = pdf_bytes
+                active_scans[scan_id]["done"] = True
+
+    except subprocess.CalledProcessError as err:
+        clean_err = clean_ansi(err.stderr or err.stdout or str(err))
+        with scans_lock:
+            if scan_id in active_scans:
+                active_scans[scan_id]["error"] = f"Pipeline Step Failed: {clean_err}"
+                active_scans[scan_id]["done"] = True
+    except Exception as exc:
+        clean_err = clean_ansi(str(exc))
+        with scans_lock:
+            if scan_id in active_scans:
+                active_scans[scan_id]["error"] = f"Audit Orchestration Error: {clean_err}"
+                active_scans[scan_id]["done"] = True
+    finally:
+        # Cleanup temporary filesystem artifacts
+        if saved_upload_path and saved_upload_path.exists():
+            saved_upload_path.unlink(missing_ok=True)
+        if scan_workspace.exists():
+            shutil.rmtree(scan_workspace, ignore_errors=True)
+        if trivy_report_path.exists():
+            trivy_report_path.unlink(missing_ok=True)
+        if markdown_report_path.exists():
+            markdown_report_path.unlink(missing_ok=True)
+        if pdf_report_path.exists():
+            pdf_report_path.unlink(missing_ok=True)
 
 @app.route("/", methods=["GET"])
 def index():
@@ -318,133 +430,116 @@ def upload_chunk():
 
     return jsonify({"status": "ok", "chunk_index": chunk_index, "total_chunks": total_chunks})
 
-@app.route("/scan", methods=["POST"])
-def scan():
+@app.route("/start_scan", methods=["POST"])
+def start_scan():
+    """Starts an asynchronous security scan and returns a scan_id for live progress tracking."""
     scan_id = uuid.uuid4().hex[:8]
-    is_json_request = request.is_json
-    saved_upload_path = None
-    upload_id = None
-    filename = None
-
-    if is_json_request:
-        payload = request.get_json() or {}
-        upload_id = payload.get("upload_id")
-        filename = payload.get("filename")
-    else:
-        upload_id = request.form.get("upload_id")
-        filename = request.form.get("filename")
+    data = request.get_json(silent=True) or {}
+    upload_id = data.get("upload_id") or request.form.get("upload_id")
+    filename = data.get("filename") or request.form.get("filename")
 
     if upload_id and filename:
         safe_name = secure_filename(filename) or f"target_{scan_id}"
         chunked_file = UPLOAD_DIR / f"chunked_{upload_id}_{safe_name}"
         if not chunked_file.exists():
-            err_msg = "Assembled upload payload not found on server."
-            return jsonify({"error": err_msg}), 400 if is_json_request else (flash(err_msg, "error"), redirect(url_for("index")))[1]
+            return jsonify({"error": "Assembled upload payload not found on server."}), 400
         saved_upload_path = chunked_file
     elif "target_file" in request.files:
         file = request.files["target_file"]
         if not file or file.filename == "":
-            err_msg = "No file selected for audit."
-            return jsonify({"error": err_msg}), 400 if is_json_request else (flash(err_msg, "error"), redirect(url_for("index")))[1]
+            return jsonify({"error": "No file selected for audit."}), 400
         safe_name = secure_filename(file.filename) or f"target_{scan_id}"
         saved_upload_path = UPLOAD_DIR / f"{scan_id}_{safe_name}"
         file.save(saved_upload_path)
     else:
-        err_msg = "No file payload detected in request."
-        return jsonify({"error": err_msg}), 400 if is_json_request else (flash(err_msg, "error"), redirect(url_for("index")))[1]
+        return jsonify({"error": "No target file provided."}), 400
 
-    scan_workspace = UPLOAD_DIR / f"workspace_{scan_id}"
-    trivy_report_path = OUTPUT_DIR / f"trivy-report-{scan_id}.json"
-    global_trivy_report = OUTPUT_DIR / "trivy-report.json"
-    markdown_report_path = OUTPUT_DIR / "SECURITY_REPORT.md"
-    pdf_report_path = OUTPUT_DIR / f"SECURITY_REPORT_{scan_id}.pdf"
+    # Initialize live scan progress
+    with scans_lock:
+        active_scans[scan_id] = {
+            "percent": 20,
+            "stage": "Initializing Pipeline",
+            "detail": "Target payload received. Spawning security sandbox...",
+            "done": False,
+            "error": None,
+            "pdf_bytes": None
+        }
 
-    pdf_stream = None
+    # Spawn background worker thread
+    thread = threading.Thread(target=execute_pipeline, args=(scan_id, saved_upload_path), daemon=True)
+    thread.start()
 
-    try:
-        # 1. Unpack or place target into dedicated workspace
-        prepare_target_directory(saved_upload_path, scan_workspace)
+    return jsonify({"status": "started", "scan_id": scan_id})
 
-        # 2. Ensure Aqua Trivy Binary is Present
-        trivy_bin = ensure_trivy()
+@app.route("/scan_progress/<scan_id>", methods=["GET"])
+def scan_progress(scan_id):
+    """Returns the current real-time percentage and status for a given scan_id."""
+    with scans_lock:
+        job = active_scans.get(scan_id)
+        if not job:
+            return jsonify({"error": "Scan job not found"}), 404
+        return jsonify({
+            "percent": job["percent"],
+            "stage": job["stage"],
+            "detail": job["detail"],
+            "done": job["done"],
+            "error": job["error"],
+            "ready": job["pdf_bytes"] is not None
+        })
 
-        # 3. Execute Aqua Security Trivy Scan (Supporting both modern --scanners and fallback)
-        trivy_cmd = [
-            trivy_bin,
-            "fs",
-            "--scanners", "vuln,misconfig,secret",
-            "--format", "json",
-            "--output", str(trivy_report_path),
-            str(scan_workspace)
-        ]
-        res = subprocess.run(trivy_cmd, capture_output=True, text=True)
-        if res.returncode != 0:
-            # Fallback to legacy flag if older Trivy version
-            trivy_cmd_legacy = [
-                trivy_bin,
-                "fs",
-                "--security-checks", "vuln,config,secret",
-                "--format", "json",
-                "--output", str(trivy_report_path),
-                str(scan_workspace)
-            ]
-            subprocess.run(trivy_cmd_legacy, check=True, capture_output=True, text=True)
+@app.route("/download_report/<scan_id>", methods=["GET"])
+def download_report(scan_id):
+    """Serves the generated PDF report and cleans up in-memory buffer."""
+    with scans_lock:
+        job = active_scans.get(scan_id)
+        if not job or not job.get("pdf_bytes"):
+            return jsonify({"error": "Report not ready or expired"}), 404
+        pdf_stream = io.BytesIO(job["pdf_bytes"])
 
-        shutil.copy2(trivy_report_path, global_trivy_report)
+    return send_file(
+        pdf_stream,
+        as_attachment=True,
+        download_name="SECURITY_REPORT.pdf",
+        mimetype="application/pdf"
+    )
 
-        # 4. Execute AI Analysis (Direct Ollama API with graceful deterministic fallback)
-        run_ai_analysis(scan_workspace, trivy_report_path, markdown_report_path)
+# Backward-compatible synchronous endpoint
+@app.route("/scan", methods=["POST"])
+def scan():
+    scan_id = uuid.uuid4().hex[:8]
+    data = request.get_json(silent=True) or {}
+    upload_id = data.get("upload_id") or request.form.get("upload_id")
+    filename = data.get("filename") or request.form.get("filename")
 
-        if not markdown_report_path.exists():
-            raise FileNotFoundError("Security markdown report was not produced.")
+    if upload_id and filename:
+        safe_name = secure_filename(filename) or f"target_{scan_id}"
+        saved_upload_path = UPLOAD_DIR / f"chunked_{upload_id}_{safe_name}"
+    elif "target_file" in request.files:
+        file = request.files["target_file"]
+        safe_name = secure_filename(file.filename) or f"target_{scan_id}"
+        saved_upload_path = UPLOAD_DIR / f"{scan_id}_{safe_name}"
+        file.save(saved_upload_path)
+    else:
+        return jsonify({"error": "No file provided"}), 400
 
-        # 5. Compile Marp Markdown into Executive PDF
-        npx_bin = resolve_binary("npx", ["/usr/local/bin/npx", "/usr/bin/npx"])
-        marp_bin = resolve_binary("marp", ["/usr/local/bin/marp", "/usr/bin/marp"])
-        if shutil.which(marp_bin) or (Path(marp_bin).is_file() and os.access(marp_bin, os.X_OK)):
-            marp_cmd = [marp_bin, str(markdown_report_path), "--pdf", "--allow-local-files", "-o", str(pdf_report_path)]
-        else:
-            marp_cmd = [npx_bin, "@marp-team/marp-cli", str(markdown_report_path), "--pdf", "--allow-local-files", "-o", str(pdf_report_path)]
+    with scans_lock:
+        active_scans[scan_id] = {"percent": 20, "stage": "Init", "detail": "Starting", "done": False, "error": None, "pdf_bytes": None}
 
-        subprocess.run(marp_cmd, check=True, capture_output=True, text=True)
+    execute_pipeline(scan_id, saved_upload_path)
 
-        if not pdf_report_path.exists():
-            raise FileNotFoundError("Marp CLI failed to compile outputs/SECURITY_REPORT.pdf")
+    with scans_lock:
+        job = active_scans.pop(scan_id, None)
 
-        # Buffer PDF in memory for immediate transmission
-        with open(pdf_report_path, "rb") as f:
-            pdf_stream = io.BytesIO(f.read())
-
-    except subprocess.CalledProcessError as err:
-        error_msg = clean_ansi(err.stderr or err.stdout or str(err))
-        if is_json_request:
-            return jsonify({"error": f"Pipeline Step Failed: {error_msg}"}), 500
-        flash(f"Pipeline Step Failed: {error_msg}", "error")
-        return redirect(url_for("index"))
-    except Exception as exc:
-        clean_msg = clean_ansi(str(exc))
-        if is_json_request:
-            return jsonify({"error": f"Audit Orchestration Error: {clean_msg}"}), 500
-        flash(f"Audit Orchestration Error: {clean_msg}", "error")
-        return redirect(url_for("index"))
-    finally:
-        if saved_upload_path and saved_upload_path.exists():
-            saved_upload_path.unlink(missing_ok=True)
-        if scan_workspace.exists():
-            shutil.rmtree(scan_workspace, ignore_errors=True)
-        if trivy_report_path.exists():
-            trivy_report_path.unlink(missing_ok=True)
-        if pdf_report_path.exists():
-            pdf_report_path.unlink(missing_ok=True)
-
-    if pdf_stream:
+    if job and job.get("error"):
+        return jsonify({"error": job["error"]}), 500
+    if job and job.get("pdf_bytes"):
         return send_file(
-            pdf_stream,
+            io.BytesIO(job["pdf_bytes"]),
             as_attachment=True,
             download_name="SECURITY_REPORT.pdf",
             mimetype="application/pdf"
         )
-    return redirect(url_for("index"))
+    return jsonify({"error": "Failed to compile report"}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=False)

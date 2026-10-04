@@ -16,6 +16,7 @@
             --danger-color: #f85149;
             --highlight: #58a6ff;
             --badge-bg: #21262d;
+            --progress-bg: #21262d;
         }
         * {
             box-sizing: border-box;
@@ -34,7 +35,7 @@
         }
         .container {
             width: 100%;
-            max-width: 720px;
+            max-width: 740px;
             background: var(--card-bg);
             border: 1px solid var(--border-color);
             border-radius: 14px;
@@ -119,7 +120,7 @@
             flex-wrap: wrap;
             gap: 6px;
             justify-content: center;
-            max-width: 520px;
+            max-width: 540px;
         }
         .badge {
             background-color: var(--badge-bg);
@@ -179,20 +180,105 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
-        .pipeline-status {
+
+        /* ── Live Progress Section ── */
+        .progress-card {
             display: none;
-            font-size: 13px;
-            color: var(--text-muted);
-            text-align: center;
-            line-height: 1.5;
-            background: rgba(88, 166, 255, 0.08);
-            border: 1px solid rgba(88, 166, 255, 0.2);
-            padding: 12px;
-            border-radius: 6px;
+            background: rgba(13, 17, 23, 0.8);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 20px;
+            flex-direction: column;
+            gap: 14px;
+            box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.4);
         }
-        .pipeline-status span {
-            color: var(--highlight);
+        .progress-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .progress-title {
+            font-size: 14px;
             font-weight: 600;
+            color: var(--text-color);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .progress-title .pulse-dot {
+            width: 8px;
+            height: 8px;
+            background-color: var(--highlight);
+            border-radius: 50%;
+            box-shadow: 0 0 8px var(--highlight);
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 0.4; transform: scale(0.9); }
+            50% { opacity: 1; transform: scale(1.2); }
+            100% { opacity: 0.4; transform: scale(0.9); }
+        }
+        .progress-percentage {
+            font-size: 26px;
+            font-weight: 800;
+            color: var(--highlight);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            text-shadow: 0 0 16px rgba(88, 166, 255, 0.35);
+        }
+        .progress-bar-container {
+            width: 100%;
+            height: 14px;
+            background: var(--progress-bg);
+            border-radius: 10px;
+            overflow: hidden;
+            border: 1px solid var(--border-color);
+            position: relative;
+        }
+        .progress-bar-fill {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, #238636 0%, #2ea043 50%, #58a6ff 100%);
+            border-radius: 10px;
+            transition: width 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            box-shadow: 0 0 12px rgba(88, 166, 255, 0.5);
+        }
+        .progress-steps {
+            display: flex;
+            justify-content: space-between;
+            gap: 6px;
+            margin-top: 4px;
+        }
+        .step-pill {
+            flex: 1;
+            text-align: center;
+            font-size: 11px;
+            font-weight: 600;
+            padding: 6px 4px;
+            border-radius: 6px;
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            color: var(--text-muted);
+            transition: all 0.3s;
+        }
+        .step-pill.active {
+            border-color: var(--highlight);
+            color: var(--highlight);
+            background: rgba(88, 166, 255, 0.1);
+        }
+        .step-pill.completed {
+            border-color: var(--accent-hover);
+            color: #56d364;
+            background: rgba(46, 160, 67, 0.12);
+        }
+        .progress-detail {
+            font-size: 12.5px;
+            color: var(--text-muted);
+            line-height: 1.4;
+            background: rgba(22, 27, 34, 0.6);
+            padding: 8px 12px;
+            border-radius: 6px;
+            border-left: 3px solid var(--highlight);
         }
     </style>
 </head>
@@ -240,13 +326,37 @@
                 <input type="file" id="target_file" name="target_file" required>
             </div>
 
+            <!-- Prominent Real-time Progress Bar & Stage Tracker -->
+            <div class="progress-card" id="progress-card">
+                <div class="progress-header">
+                    <div class="progress-title">
+                        <span class="pulse-dot"></span>
+                        <span id="progress-stage-name">Audit in Progress</span>
+                    </div>
+                    <div class="progress-percentage" id="progress-number">0%</div>
+                </div>
+
+                <div class="progress-bar-container">
+                    <div class="progress-bar-fill" id="progress-fill"></div>
+                </div>
+
+                <div class="progress-steps">
+                    <div class="step-pill" id="step-1">1. Upload</div>
+                    <div class="step-pill" id="step-2">2. Unpack</div>
+                    <div class="step-pill" id="step-3">3. Trivy Scan</div>
+                    <div class="step-pill" id="step-4">4. AI Analysis</div>
+                    <div class="step-pill" id="step-5">5. PDF Ready</div>
+                </div>
+
+                <div class="progress-detail" id="progress-detail-text">
+                    Initializing security audit pipeline...
+                </div>
+            </div>
+
             <button type="submit" id="submit-btn" class="btn-submit">
                 <div class="spinner" id="spinner"></div>
                 <span id="btn-text">Execute Hybrid SAST Audit</span>
             </button>
-            <div class="pipeline-status" id="status-text">
-                <span id="pipeline-stage">Initializing:</span> <span id="pipeline-detail">Preparing upload...</span>
-            </div>
         </form>
     </div>
 
@@ -258,13 +368,25 @@
         const submitBtn = document.getElementById('submit-btn');
         const spinner = document.getElementById('spinner');
         const btnText = document.getElementById('btn-text');
-        const statusText = document.getElementById('status-text');
-        const pipelineStage = document.getElementById('pipeline-stage');
-        const pipelineDetail = document.getElementById('pipeline-detail');
+
+        // Progress elements
+        const progressCard = document.getElementById('progress-card');
+        const progressFill = document.getElementById('progress-fill');
+        const progressNumber = document.getElementById('progress-number');
+        const progressStageName = document.getElementById('progress-stage-name');
+        const progressDetailText = document.getElementById('progress-detail-text');
         const dynamicFlash = document.getElementById('dynamic-flash');
         const dynamicErrorText = document.getElementById('dynamic-error-text');
 
-        const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB slices to bypass Codespaces/Nginx 413 limits
+        const stepPills = [
+            document.getElementById('step-1'),
+            document.getElementById('step-2'),
+            document.getElementById('step-3'),
+            document.getElementById('step-4'),
+            document.getElementById('step-5')
+        ];
+
+        const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB slices to bypass Codespaces/Nginx limits
 
         dropzone.addEventListener('click', () => fileInput.click());
 
@@ -299,13 +421,29 @@
             }
         }
 
+        function updateProgressDisplay(percent, stageName, detailText, activeStepIndex) {
+            progressFill.style.width = percent + '%';
+            progressNumber.textContent = percent + '%';
+            if (stageName) progressStageName.textContent = stageName;
+            if (detailText) progressDetailText.textContent = detailText;
+
+            stepPills.forEach((pill, idx) => {
+                pill.classList.remove('active', 'completed');
+                if (idx < activeStepIndex) {
+                    pill.classList.add('completed');
+                } else if (idx === activeStepIndex) {
+                    pill.classList.add('active');
+                }
+            });
+        }
+
         function showError(msg) {
             dynamicErrorText.textContent = msg;
             dynamicFlash.style.display = 'flex';
             submitBtn.disabled = false;
             spinner.style.display = 'none';
-            statusText.style.display = 'none';
             btnText.textContent = 'Execute Hybrid SAST Audit';
+            progressCard.style.display = 'none';
         }
 
         form.addEventListener('submit', async (e) => {
@@ -323,19 +461,23 @@
 
             submitBtn.disabled = true;
             spinner.style.display = 'inline-block';
-            statusText.style.display = 'block';
+            progressCard.style.display = 'flex';
+            btnText.textContent = 'Running Security Pipeline...';
 
             try {
-                // Step 1: Chunked Upload (2MB slices bypass Codespaces Nginx 413 limits)
+                // Step 1: Chunked Upload (0% to 20%)
                 for (let index = 0; index < totalChunks; index++) {
                     const start = index * CHUNK_SIZE;
                     const end = Math.min(file.size, start + CHUNK_SIZE);
                     const chunk = file.slice(start, end);
 
-                    pipelineStage.textContent = 'Uploading Artifact:';
-                    const percent = Math.round(((index + 1) / totalChunks) * 100);
-                    pipelineDetail.textContent = `Transferring chunk ${index + 1} of ${totalChunks} (${percent}%)...`;
-                    btnText.textContent = `Uploading (${percent}%)...`;
+                    const uploadPercent = Math.round(((index + 1) / totalChunks) * 20);
+                    updateProgressDisplay(
+                        uploadPercent,
+                        'Uploading Artifact',
+                        `Transferring chunk ${index + 1} of ${totalChunks} (${Math.round(((index + 1) / totalChunks) * 100)}%)...`,
+                        0
+                    );
 
                     const formData = new FormData();
                     formData.append('upload_id', uploadId);
@@ -351,47 +493,82 @@
 
                     if (!chunkResp.ok) {
                         const errData = await chunkResp.json().catch(() => ({}));
-                        throw new Error(errData.error || `Upload slice ${index + 1} rejected by gateway (HTTP ${chunkResp.status}).`);
+                        throw new Error(errData.error || `Upload rejected (HTTP ${chunkResp.status}).`);
                     }
                 }
 
-                // Step 2: Trigger Hybrid Security Analysis Pipeline
-                pipelineStage.textContent = 'Analyzing Target:';
-                pipelineDetail.textContent = 'Aqua Trivy scanner &bull; Qwen 2.5 Coder validation &bull; Marp PDF rendering...';
-                btnText.textContent = 'Orchestrating Security Pipeline...';
+                // Step 2: Trigger Async Scan Pipeline
+                updateProgressDisplay(22, 'Spawning Audit Pipeline', 'Triggering asynchronous scan worker...', 0);
 
-                const scanResp = await fetch('/scan', {
+                const startResp = await fetch('/start_scan', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ upload_id: uploadId, filename: file.name })
                 });
 
-                if (!scanResp.ok) {
-                    const scanErr = await scanResp.json().catch(() => ({}));
-                    throw new Error(scanErr.error || `Security pipeline returned HTTP ${scanResp.status}`);
+                if (!startResp.ok) {
+                    const startErr = await startResp.json().catch(() => ({}));
+                    throw new Error(startErr.error || `Failed to initiate audit worker (HTTP ${startResp.status}).`);
                 }
 
-                // Step 3: Trigger Browser PDF Download
-                pipelineStage.textContent = 'Complete:';
-                pipelineDetail.textContent = 'Report compiled successfully. Initiating download...';
-                btnText.textContent = 'Download Starting...';
+                const startData = await startResp.json();
+                const scanId = startData.scan_id;
 
-                const pdfBlob = await scanResp.blob();
-                const downloadUrl = window.URL.createObjectURL(pdfBlob);
-                const tempLink = document.createElement('a');
-                tempLink.href = downloadUrl;
-                tempLink.download = 'SECURITY_REPORT.pdf';
-                document.body.appendChild(tempLink);
-                tempLink.click();
-                tempLink.remove();
-                window.URL.revokeObjectURL(downloadUrl);
+                // Step 3: Poll Progress until 100% or Error
+                await new Promise((resolve, reject) => {
+                    const interval = setInterval(async () => {
+                        try {
+                            const pollResp = await fetch(`/scan_progress/${scanId}`);
+                            if (!pollResp.ok) {
+                                clearInterval(interval);
+                                reject(new Error(`Progress tracking failed (HTTP ${pollResp.status}).`));
+                                return;
+                            }
+
+                            const job = await pollResp.json();
+
+                            if (job.error) {
+                                clearInterval(interval);
+                                reject(new Error(job.error));
+                                return;
+                            }
+
+                            // Determine active step index for UI pills
+                            let stepIdx = 1;
+                            if (job.percent >= 95) stepIdx = 4;
+                            else if (job.percent >= 75) stepIdx = 3;
+                            else if (job.percent >= 45) stepIdx = 2;
+                            else if (job.percent >= 25) stepIdx = 1;
+
+                            updateProgressDisplay(job.percent, job.stage, job.detail, stepIdx);
+
+                            if (job.done && job.ready) {
+                                clearInterval(interval);
+                                resolve();
+                            }
+                        } catch (pollErr) {
+                            clearInterval(interval);
+                            reject(pollErr);
+                        }
+                    }, 500);
+                });
+
+                // Step 4: Download PDF Report
+                updateProgressDisplay(100, 'Audit Complete', 'Report compiled successfully. Initiating download...', 4);
+                btnText.textContent = 'Report Download Ready!';
+
+                const dlLink = document.createElement('a');
+                dlLink.href = `/download_report/${scanId}`;
+                dlLink.download = 'SECURITY_REPORT.pdf';
+                document.body.appendChild(dlLink);
+                dlLink.click();
+                dlLink.remove();
 
                 setTimeout(() => {
                     submitBtn.disabled = false;
                     spinner.style.display = 'none';
-                    statusText.style.display = 'none';
                     btnText.textContent = 'Execute Hybrid SAST Audit';
-                }, 2000);
+                }, 3000);
 
             } catch (err) {
                 showError(err.message || 'An unexpected error occurred during execution.');

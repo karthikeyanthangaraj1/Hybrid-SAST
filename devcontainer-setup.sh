@@ -14,6 +14,8 @@ sudo apt-get install -y --no-install-recommends \
     lsb-release \
     curl \
     unzip \
+    tar \
+    gzip \
     ca-certificates
 
 # 2. Install Aqua Security Trivy via official deb repository
@@ -28,29 +30,26 @@ echo "[+] Installing OpenCode CLI and Marp CLI..."
 sudo npm install -g opencode-ai @marp-team/marp-cli
 
 # 4. Install Python dependencies
-echo "[+] Installing Python requirements..."
+echo "[+] Installing Python dependencies..."
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# 5. Install and launch Ollama
-echo "[+] Installing Ollama..."
+# 5. Install Ollama and pull local model
+echo "[+] Installing Ollama engine..."
 curl -fsSL https://ollama.com/install.sh | sh
 
 echo "[+] Starting Ollama service daemon..."
-# Start Ollama daemon in the background
 nohup ollama serve > /tmp/ollama.log 2>&1 &
 
-# Wait for Ollama service to become healthy
-echo "[+] Waiting for Ollama engine to be responsive..."
+echo "[+] Waiting for Ollama engine to become responsive..."
 until curl -s http://localhost:11434/api/tags > /dev/null; do
     sleep 2
 done
 
-# Pull Qwen 2.5 Coder 7B model
-echo "[+] Pulling qwen2.5-coder:7b model into local storage..."
+echo "[+] Pulling qwen2.5-coder:7b model locally..."
 ollama pull qwen2.5-coder:7b
 
-# Create necessary working directories
+# Create core working directories
 mkdir -p uploads outputs
 
 echo "=================================================="

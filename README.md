@@ -1,36 +1,58 @@
-# Hybrid SAST Web Platform (Codespaces / DevContainers)
+# Hybrid SAST Web Platform (GitHub Codespaces / DevContainers)
 
-A self-hosted, cloud-native Static Application Security Testing (SAST) platform engineered to run completely inside **GitHub Codespaces** or any Docker-backed **DevContainer**.
-
-## Architectural Highlights
-- **Scanner**: Aqua Security Trivy (CVEs, hardcoded secrets, misconfigurations, and software composition).
-- **Local Neural Engine**: Ollama serving `qwen2.5-coder:7b` completely offline inside the DevContainer.
-- **Agent Orchestrator**: OpenCode CLI for false-positive context reduction, OWASP/CVSS grouping, and generating actionable code diff patches.
-- **Reporting Engine**: Marp CLI generating executive-ready presentation slide PDFs.
-- **Interface**: Modern Flask web application featuring drag-and-drop ingestion and automated report downloads.
+A cloud-native, self-hosted Static Application Security Testing (SAST) web application engineered to run entirely inside **GitHub Codespaces** or Docker DevContainers.
 
 ---
 
-## Quickstart on GitHub Codespaces
+## Technical Highlights
 
-1. **Push this repository** to GitHub:
-   ```bash
-   git init
-   git add .
-   git commit -m "feat: hybrid SAST platform with local AI & Marp PDF generation"
-   git branch -M main
-   git remote add origin <YOUR_GITHUB_REPO_URL>
-   git push -u origin main
-   ```
-2. Navigate to your repository on GitHub.
-3. Click **Code** -> **Codespaces** -> **Create codespace on main**.
-4. GitHub Codespaces detects `.devcontainer/devcontainer.json` and runs `devcontainer-setup.sh`:
-   - Installs Aqua Trivy.
-   - Installs OpenCode CLI and Marp CLI globally.
-   - Installs Ollama daemon and pulls `qwen2.5-coder:7b`.
-   - Installs Python dependencies.
-5. Once the build finishes, start the platform inside the Codespace terminal:
-   ```bash
-   python app.py
-   ```
-6. Port `5000` forwards automatically. Click **Open in Browser** in the port notification, upload your repository or source archive, and retrieve `SECURITY_REPORT.pdf`.
+- **Universal Static Scanner**: [Aqua Security Trivy](https://github.com/aquasecurity/trivy) (Vulnerabilities, CVEs, Secrets, Misconfigurations, Binary and Asset Analysis).
+- **Private AI Engine**: [Ollama](https://ollama.com/) running `qwen2.5-coder:7b` locally in the container (zero external API keys, zero cloud egress costs).
+- **Agent Orchestrator**: OpenCode CLI running context-aware false-positive deduplication and generating unified git diff patches.
+- **Executive PDF Generation**: [Marp CLI](https://marp.app/) (`@marp-team/marp-cli`) transforming audit markdown into presentation slide PDFs.
+- **Universal Target Support**: Accepts archives (`.zip`, `.apk`, `.tar.gz`, `.jar`, `.war`) and raw code/binary files (`.exe`, `.php`, `.aspx`, `.py`, `.db`, etc.) via a responsive dark-themed drag-and-drop web UI.
+
+---
+
+## Quickstart Guide for GitHub Codespaces
+
+### 1. Launch Codespace
+1. Navigate to your repository on GitHub (`https://github.com/karthikeyanthangaraj1/Hybrid-SAST`).
+2. Click the green **Code** button &rarr; select the **Codespaces** tab &rarr; click **Create codespace on main**.
+3. GitHub Codespaces will automatically build the container defined in `.devcontainer/devcontainer.json` and execute `devcontainer-setup.sh`:
+   - Configures Aqua Trivy via deb repository.
+   - Installs OpenCode and Marp CLI globally via npm.
+   - Installs Python dependencies (`flask==3.0.3`).
+   - Downloads the Ollama engine and pulls `qwen2.5-coder:7b`.
+
+### 2. Start the Platform
+In the Codespace integrated terminal, run:
+```bash
+python app.py
+```
+
+### 3. Run Security Audits
+1. GitHub Codespaces will detect port `5000` and automatically display a notification: **Open in Browser**.
+2. Drag and drop any repository archive (`.zip`, `.apk`, `.tar.gz`) or source file (`.php`, `.py`, `.exe`, etc.).
+3. Click **Execute Hybrid SAST Audit**.
+4. The pipeline will unpack the asset, run Trivy static checks, invoke Qwen 2.5 Coder to filter false positives and craft remediations, compile the Marp report, and immediately download `SECURITY_REPORT.pdf`.
+
+---
+
+## Repository Structure
+
+```text
+my-sast-platform/
+├── .devcontainer/
+│   └── devcontainer.json      # DevContainer configuration with Node & Python
+├── .opencode/
+│   └── commands/
+│       └── sast.md            # AI orchestrator prompt & Marp report template
+├── templates/
+│   └── index.html             # Responsive dark UI with format badges
+├── app.py                     # Flask backend with universal file unpacker & pipeline runner
+├── devcontainer-setup.sh      # Automated provisioning script for tools & Ollama
+├── requirements.txt           # Pinned Python requirements (flask==3.0.3)
+├── .gitignore                 # Excludes scan artifacts, uploads, and caches
+└── README.md                  # Documentation and quickstart guide
+```

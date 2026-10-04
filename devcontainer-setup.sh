@@ -5,6 +5,18 @@ echo "=================================================="
 echo " Starting Hybrid SAST Platform DevContainer Setup "
 echo "=================================================="
 
+# ── Resolve python/pip/npm with full path discovery ──
+PYTHON_BIN=""
+for p in python3 python /usr/bin/python3 /usr/local/bin/python3; do
+    if command -v "$p" &>/dev/null; then PYTHON_BIN="$p"; break; fi
+done
+if [ -z "$PYTHON_BIN" ]; then echo "[!] Python not found."; exit 1; fi
+
+NPM_BIN=""
+for n in npm /usr/local/bin/npm /usr/bin/npm; do
+    if command -v "$n" &>/dev/null; then NPM_BIN="$n"; break; fi
+done
+
 # 1. Update system packages and install prerequisites
 sudo apt-get update -y
 sudo apt-get install -y --no-install-recommends \
@@ -23,28 +35,22 @@ echo "[+] Installing Aqua Security Trivy..."
 curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
 sudo chmod 755 /usr/local/bin/trivy
 
-# 3. Configure NPM global prefix in /usr/local and install CLI tools
-echo "[+] Configuring global NPM directory in /usr/local..."
-sudo npm config -g set prefix /usr/local
-sudo npm install -g opencode-ai @marp-team/marp-cli
-
-# Set open read & execute permissions for non-root users (like vscode)
-sudo chmod -R 755 /usr/local/bin /usr/local/lib/node_modules
-
-# Create symlinks in /usr/bin to guarantee PATH availability
-sudo ln -sf /usr/local/bin/opencode /usr/bin/opencode || true
-sudo ln -sf /usr/local/bin/marp /usr/bin/marp || true
-
-# If previous root npm directory exists, loosen permissions
-if [ -d "/root/.npm-global" ]; then
-    sudo chmod 755 /root || true
-    sudo chmod -R 755 /root/.npm-global || true
+# 3. Install npm CLI tools (Marp CLI, OpenCode) if npm is available
+if [ -n "$NPM_BIN" ]; then
+    echo "[+] Installing Marp CLI and OpenCode CLI via npm..."
+    sudo env "PATH=$PATH" "$NPM_BIN" install -g @marp-team/marp-cli opencode-ai 2>/dev/null || \
+        "$NPM_BIN" install -g @marp-team/marp-cli opencode-ai 2>/dev/null || true
+    sudo chmod -R 755 /usr/local/bin /usr/local/lib/node_modules 2>/dev/null || true
+    sudo ln -sf /usr/local/bin/opencode /usr/bin/opencode 2>/dev/null || true
+    sudo ln -sf /usr/local/bin/marp /usr/bin/marp 2>/dev/null || true
+else
+    echo "[!] npm not found — Marp/OpenCode will be invoked via npx at scan time."
 fi
 
 # 4. Install Python dependencies
 echo "[+] Installing Python dependencies..."
-pip install --upgrade pip
-pip install -r requirements.txt
+"$PYTHON_BIN" -m pip install --upgrade pip
+"$PYTHON_BIN" -m pip install -r requirements.txt
 
 # 5. Install Ollama and pull local model
 echo "[+] Installing Ollama engine..."

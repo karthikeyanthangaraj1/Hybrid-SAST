@@ -1,0 +1,9 @@
+uploads/
+outputs/
+*.json
+*.pdf
+__pycache__/
+*.pyc
+.env
+.DS_Store
+*.log

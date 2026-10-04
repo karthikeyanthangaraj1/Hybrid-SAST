@@ -73,6 +73,7 @@
             background: rgba(248, 81, 73, 0.15);
             border: 1px solid var(--danger-color);
             color: var(--danger-color);
+            word-break: break-word;
         }
         .dropzone {
             border: 2px dashed var(--border-color);
@@ -202,6 +203,10 @@
             <p>Self-Hosted Static Analysis &bull; Aqua Trivy &bull; Qwen 2.5 Coder &bull; Marp PDF</p>
         </header>
 
+        <div id="dynamic-flash" class="flash-messages" style="display: none;">
+            <div id="dynamic-error-text" class="flash-message"></div>
+        </div>
+
         {% with messages = get_flashed_messages(with_categories=true) %}
             {% if messages %}
                 <div class="flash-messages">
@@ -212,7 +217,7 @@
             {% endif %}
         {% endwith %}
 
-        <form id="sast-form" action="/scan" method="POST" enctype="multipart/form-data">
+        <form id="sast-form">
             <div class="dropzone" id="dropzone">
                 <svg viewBox="0 0 24 24">
                     <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/>
@@ -240,7 +245,7 @@
                 <span id="btn-text">Execute Hybrid SAST Audit</span>
             </button>
             <div class="pipeline-status" id="status-text">
-                <span>Running Audit Pipeline:</span> Ingesting artifact &rarr; Aqua Trivy scanner &rarr; Qwen 2.5 Coder validation &rarr; Marp PDF rendering.
+                <span id="pipeline-stage">Initializing:</span> <span id="pipeline-detail">Preparing upload...</span>
             </div>
         </form>
     </div>
@@ -254,6 +259,12 @@
         const spinner = document.getElementById('spinner');
         const btnText = document.getElementById('btn-text');
         const statusText = document.getElementById('status-text');
+        const pipelineStage = document.getElementById('pipeline-stage');
+        const pipelineDetail = document.getElementById('pipeline-detail');
+        const dynamicFlash = document.getElementById('dynamic-flash');
+        const dynamicErrorText = document.getElementById('dynamic-error-text');
+
+        const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB slices to bypass Codespaces/Nginx 413 limits
 
         dropzone.addEventListener('click', () => fileInput.click());
 
@@ -283,16 +294,108 @@
         function updateFileName() {
             if (fileInput.files.length) {
                 const file = fileInput.files[0];
-                const sizeKb = (file.size / 1024).toFixed(1);
-                fileNameDisplay.textContent = `Selected: ${file.name} (${sizeKb} KB)`;
+                const sizeMb = (file.size / (1024 * 1024)).toFixed(2);
+                fileNameDisplay.textContent = `Selected: ${file.name} (${sizeMb} MB)`;
             }
         }
 
-        form.addEventListener('submit', () => {
+        function showError(msg) {
+            dynamicErrorText.textContent = msg;
+            dynamicFlash.style.display = 'flex';
+            submitBtn.disabled = false;
+            spinner.style.display = 'none';
+            statusText.style.display = 'none';
+            btnText.textContent = 'Execute Hybrid SAST Audit';
+        }
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            dynamicFlash.style.display = 'none';
+
+            if (!fileInput.files.length) {
+                showError("Please select a target file to scan.");
+                return;
+            }
+
+            const file = fileInput.files[0];
+            const uploadId = 'up_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
+            const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+
             submitBtn.disabled = true;
             spinner.style.display = 'inline-block';
             statusText.style.display = 'block';
-            btnText.textContent = 'Orchestrating Security Pipeline...';
+
+            try {
+                // Step 1: Chunked Upload (2MB slices bypass Codespaces Nginx 413 limits)
+                for (let index = 0; index < totalChunks; index++) {
+                    const start = index * CHUNK_SIZE;
+                    const end = Math.min(file.size, start + CHUNK_SIZE);
+                    const chunk = file.slice(start, end);
+
+                    pipelineStage.textContent = 'Uploading Artifact:';
+                    const percent = Math.round(((index + 1) / totalChunks) * 100);
+                    pipelineDetail.textContent = `Transferring chunk ${index + 1} of ${totalChunks} (${percent}%)...`;
+                    btnText.textContent = `Uploading (${percent}%)...`;
+
+                    const formData = new FormData();
+                    formData.append('upload_id', uploadId);
+                    formData.append('chunk_index', index);
+                    formData.append('total_chunks', totalChunks);
+                    formData.append('filename', file.name);
+                    formData.append('chunk', chunk);
+
+                    const chunkResp = await fetch('/upload_chunk', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    if (!chunkResp.ok) {
+                        const errData = await chunkResp.json().catch(() => ({}));
+                        throw new Error(errData.error || `Upload slice ${index + 1} rejected by gateway (HTTP ${chunkResp.status}).`);
+                    }
+                }
+
+                // Step 2: Trigger Hybrid Security Analysis Pipeline
+                pipelineStage.textContent = 'Analyzing Target:';
+                pipelineDetail.textContent = 'Aqua Trivy scanner &bull; Qwen 2.5 Coder validation &bull; Marp PDF rendering...';
+                btnText.textContent = 'Orchestrating Security Pipeline...';
+
+                const scanResp = await fetch('/scan', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ upload_id: uploadId, filename: file.name })
+                });
+
+                if (!scanResp.ok) {
+                    const scanErr = await scanResp.json().catch(() => ({}));
+                    throw new Error(scanErr.error || `Security pipeline returned HTTP ${scanResp.status}`);
+                }
+
+                // Step 3: Trigger Browser PDF Download
+                pipelineStage.textContent = 'Complete:';
+                pipelineDetail.textContent = 'Report compiled successfully. Initiating download...';
+                btnText.textContent = 'Download Starting...';
+
+                const pdfBlob = await scanResp.blob();
+                const downloadUrl = window.URL.createObjectURL(pdfBlob);
+                const tempLink = document.createElement('a');
+                tempLink.href = downloadUrl;
+                tempLink.download = 'SECURITY_REPORT.pdf';
+                document.body.appendChild(tempLink);
+                tempLink.click();
+                tempLink.remove();
+                window.URL.revokeObjectURL(downloadUrl);
+
+                setTimeout(() => {
+                    submitBtn.disabled = false;
+                    spinner.style.display = 'none';
+                    statusText.style.display = 'none';
+                    btnText.textContent = 'Execute Hybrid SAST Audit';
+                }, 2000);
+
+            } catch (err) {
+                showError(err.message || 'An unexpected error occurred during execution.');
+            }
         });
     </script>
 </body>

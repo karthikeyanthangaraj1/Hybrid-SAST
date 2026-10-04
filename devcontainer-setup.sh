@@ -25,9 +25,23 @@ echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.
 sudo apt-get update -y
 sudo apt-get install -y trivy
 
-# 3. Install OpenCode CLI and Marp CLI globally via npm
-echo "[+] Installing OpenCode CLI and Marp CLI..."
+# 3. Configure NPM global prefix in /usr/local and install CLI tools
+echo "[+] Configuring global NPM directory in /usr/local..."
+sudo npm config -g set prefix /usr/local
 sudo npm install -g opencode-ai @marp-team/marp-cli
+
+# Set open read & execute permissions for non-root users (like vscode)
+sudo chmod -R 755 /usr/local/bin /usr/local/lib/node_modules
+
+# Create symlinks in /usr/bin to guarantee PATH availability
+sudo ln -sf /usr/local/bin/opencode /usr/bin/opencode || true
+sudo ln -sf /usr/local/bin/marp /usr/bin/marp || true
+
+# If previous root npm directory exists, loosen permissions
+if [ -d "/root/.npm-global" ]; then
+    sudo chmod 755 /root || true
+    sudo chmod -R 755 /root/.npm-global || true
+fi
 
 # 4. Install Python dependencies
 echo "[+] Installing Python dependencies..."

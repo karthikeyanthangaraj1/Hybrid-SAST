@@ -1,6 +1,8 @@
 uploads/
 outputs/
 *.json
+!devcontainer.json
+!/.devcontainer/devcontainer.json
 *.pdf
 __pycache__/
 *.pyc

@@ -28,6 +28,7 @@ sudo apt-get install -y --no-install-recommends \
     unzip \
     tar \
     gzip \
+    zstd \
     ca-certificates
 
 # 2. Install Aqua Security Trivy via official installer

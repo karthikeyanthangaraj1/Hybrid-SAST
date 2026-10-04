@@ -46,6 +46,11 @@ echo "[+] Installing Python requirements..."
 "$PYTHON_BIN" -m pip install -r requirements.txt
 
 # ── 4. Install & start Ollama if missing ──
+if ! command -v zstd &>/dev/null; then
+    echo "[+] Installing zstd..."
+    sudo apt-get update -y && sudo apt-get install -y zstd 2>/dev/null || true
+fi
+
 if ! command -v ollama &>/dev/null; then
     echo "[+] Installing Ollama..."
     curl -fsSL https://ollama.com/install.sh | sh

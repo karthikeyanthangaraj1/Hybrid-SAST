@@ -1,9 +1,11 @@
 import os
 import io
+import json
 import uuid
 import shutil
 import tarfile
 import zipfile
+import urllib.request
 import subprocess
 from pathlib import Path
 from flask import Flask, render_template, request, send_file, flash, redirect, url_for, jsonify
@@ -27,7 +29,6 @@ def resolve_binary(binary_name: str, fallback_candidates: list[str]) -> str:
     resolved = shutil.which(binary_name)
     if resolved:
         try:
-            # Ensure the resolved binary is executable and not locked inside /root
             if os.access(resolved, os.X_OK) and not resolved.startswith("/root"):
                 return resolved
         except (PermissionError, OSError):
@@ -44,6 +45,22 @@ def resolve_binary(binary_name: str, fallback_candidates: list[str]) -> str:
             continue
     return binary_name
 
+def ensure_trivy() -> str:
+    """Finds or automatically installs Aqua Trivy if missing to prevent Errno 2."""
+    trivy_bin = resolve_binary("trivy", ["/usr/local/bin/trivy", "/usr/bin/trivy"])
+    if shutil.which(trivy_bin) or (Path(trivy_bin).is_file() and os.access(trivy_bin, os.X_OK)):
+        return trivy_bin
+
+    # Auto-provision trivy if not found in PATH or standard paths
+    try:
+        install_cmd = "curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin"
+        subprocess.run(install_cmd, shell=True, check=True, capture_output=True)
+        if Path("/usr/local/bin/trivy").is_file():
+            return "/usr/local/bin/trivy"
+    except Exception:
+        pass
+    return trivy_bin
+
 def is_archive(filename: str) -> bool:
     lower_name = filename.lower()
     return any(lower_name.endswith(ext) for ext in ARCHIVE_EXTENSIONS)
@@ -58,7 +75,6 @@ def prepare_target_directory(saved_file_path: Path, workspace_dir: Path) -> Path
 
     if filename_lower.endswith((".zip", ".apk", ".jar", ".war")):
         with zipfile.ZipFile(saved_file_path, 'r') as archive:
-            # Prevent ZipSlip vulnerability
             for member in archive.infolist():
                 target_path = (workspace_dir / member.filename).resolve()
                 if not str(target_path).startswith(str(workspace_dir.resolve())):
@@ -77,10 +93,68 @@ def prepare_target_directory(saved_file_path: Path, workspace_dir: Path) -> Path
         return workspace_dir
 
     else:
-        # Standalone code file, binary, database, or executable
         destination = workspace_dir / saved_file_path.name
         shutil.copy2(saved_file_path, destination)
         return workspace_dir
+
+def run_ai_analysis(workspace_dir: Path, trivy_report_path: Path, output_md_path: Path):
+    """
+    Analyzes Trivy findings using local Qwen2.5-Coder via Ollama HTTP API,
+    falling back to OpenCode CLI if direct endpoint is unavailable.
+    """
+    try:
+        with open(trivy_report_path, "r", encoding="utf-8") as f:
+            trivy_json = json.load(f)
+
+        prompt = f"""
+You are an expert Principal DevSecOps Architect.
+Analyze the following Aqua Trivy security scan results for the target {workspace_dir.name}.
+1. Validate real vulnerabilities, filter out false positives, and demote unreachable dependencies.
+2. Group confirmed findings by OWASP Top 10 and CVSS severity (Critical, High, Medium, Low).
+3. Provide exact code remediation unified git diff patches for confirmed issues.
+4. Output the complete report formatted in Marp slide presentation Markdown (theme: uncover, paginate: true).
+
+Trivy Results:
+{json.dumps(trivy_json, indent=2)[:15000]}
+"""
+        req_data = json.dumps({
+            "model": "qwen2.5-coder:7b",
+            "prompt": prompt,
+            "stream": False
+        }).encode("utf-8")
+
+        ollama_req = urllib.request.Request(
+            "http://localhost:11434/api/generate",
+            data=req_data,
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(ollama_req, timeout=180) as resp:
+            resp_obj = json.loads(resp.read().decode("utf-8"))
+            raw_md = resp_obj.get("response", "")
+            if not raw_md.strip().startswith("---"):
+                raw_md = f"---\nmarp: true\ntheme: uncover\npaginate: true\nheader: 'Hybrid SAST Security Report'\nfooter: 'Aqua Trivy + Qwen2.5-Coder'\n---\n\n{raw_md}"
+            output_md_path.write_text(raw_md, encoding="utf-8")
+            return
+    except Exception:
+        pass
+
+    # Fallback to OpenCode CLI
+    env = os.environ.copy()
+    env["OPENAI_API_BASE"] = "http://localhost:11434/v1"
+    env["OPENAI_API_KEY"] = "ollama"
+    npx_bin = resolve_binary("npx", ["/usr/local/bin/npx", "/usr/bin/npx"])
+    opencode_prompt = (
+        "Execute sast: read outputs/trivy-report.json, cross-reference against "
+        f"{workspace_dir}, filter false positives, generate diff patches, and write outputs/SECURITY_REPORT.md."
+    )
+    if shutil.which("opencode") and not shutil.which("opencode").startswith("/root"):
+        opencode_cmd = ["opencode", "run", "--model", "qwen2.5-coder:7b", opencode_prompt]
+    elif Path("/usr/local/bin/opencode").is_file() and os.access("/usr/local/bin/opencode", os.X_OK):
+        opencode_cmd = ["/usr/local/bin/opencode", "run", "--model", "qwen2.5-coder:7b", opencode_prompt]
+    else:
+        opencode_cmd = [npx_bin, "--yes", "opencode-ai", "run", "--model", "qwen2.5-coder:7b", opencode_prompt]
+
+    subprocess.run(opencode_cmd, env=env, check=True, capture_output=True, text=True, cwd=str(BASE_DIR))
 
 @app.route("/", methods=["GET"])
 def index():
@@ -88,9 +162,7 @@ def index():
 
 @app.route("/upload_chunk", methods=["POST"])
 def upload_chunk():
-    """
-    Receives file slices (chunks) under 2MB to bypass GitHub Codespaces / Nginx 413 limits.
-    """
+    """Receives file slices (chunks) under 2MB to bypass GitHub Codespaces / Nginx 413 limits."""
     upload_id = request.form.get("upload_id")
     chunk_index = request.form.get("chunk_index", type=int)
     total_chunks = request.form.get("total_chunks", type=int)
@@ -153,15 +225,13 @@ def scan():
     pdf_stream = None
 
     try:
-        # Unpack or place target into dedicated workspace
+        # 1. Unpack or place target into dedicated workspace
         prepare_target_directory(saved_upload_path, scan_workspace)
 
-        # 1. Resolve Executable Binaries (Strictly avoiding /root paths)
-        trivy_bin = resolve_binary("trivy", ["/usr/local/bin/trivy", "/usr/bin/trivy"])
-        npx_bin = resolve_binary("npx", ["/usr/local/bin/npx", "/usr/bin/npx"])
-        opencode_bin = resolve_binary("opencode", ["/usr/local/bin/opencode", "/usr/bin/opencode"])
+        # 2. Ensure Aqua Trivy Binary is Present
+        trivy_bin = ensure_trivy()
 
-        # 2. Execute Aqua Security Trivy Scan
+        # 3. Execute Aqua Security Trivy Scan
         trivy_cmd = [
             trivy_bin,
             "fs",
@@ -172,43 +242,22 @@ def scan():
         ]
         subprocess.run(trivy_cmd, check=True, capture_output=True, text=True)
 
-        # Mirror output to standard trivy-report.json for OpenCode command ingestion
         shutil.copy2(trivy_report_path, global_trivy_report)
 
-        # 3. Configure Local Ollama Environment
-        env = os.environ.copy()
-        env["OPENAI_API_BASE"] = "http://localhost:11434/v1"
-        env["OPENAI_API_KEY"] = "ollama"
-
-        # 4. Execute OpenCode AI Agent with Qwen 2.5 Coder
-        opencode_prompt = (
-            "Execute the custom sast command: read outputs/trivy-report.json, cross-reference against "
-            f"the code in {scan_workspace}, filter false positives, formulate patches, and write the full Marp "
-            "presentation to outputs/SECURITY_REPORT.md."
-        )
-
-        # Select safest execution path: binary in /usr/local/bin or npx
-        if shutil.which("opencode") and not shutil.which("opencode").startswith("/root"):
-            opencode_cmd = ["opencode", "run", "--model", "qwen2.5-coder:7b", opencode_prompt]
-        elif Path("/usr/local/bin/opencode").is_file() and os.access("/usr/local/bin/opencode", os.X_OK):
-            opencode_cmd = ["/usr/local/bin/opencode", "run", "--model", "qwen2.5-coder:7b", opencode_prompt]
-        else:
-            opencode_cmd = [npx_bin, "--yes", "opencode-ai", "run", "--model", "qwen2.5-coder:7b", opencode_prompt]
-
-        subprocess.run(opencode_cmd, env=env, check=True, capture_output=True, text=True, cwd=str(BASE_DIR))
+        # 4. Execute AI Analysis (Direct Ollama API with OpenCode CLI fallback)
+        run_ai_analysis(scan_workspace, trivy_report_path, markdown_report_path)
 
         if not markdown_report_path.exists():
-            raise FileNotFoundError("OpenCode AI agent did not produce outputs/SECURITY_REPORT.md")
+            raise FileNotFoundError("AI security report (outputs/SECURITY_REPORT.md) was not produced.")
 
         # 5. Compile Marp Markdown into Executive PDF
-        marp_cmd = [
-            npx_bin,
-            "@marp-team/marp-cli",
-            str(markdown_report_path),
-            "--pdf",
-            "--allow-local-files",
-            "-o", str(pdf_report_path)
-        ]
+        npx_bin = resolve_binary("npx", ["/usr/local/bin/npx", "/usr/bin/npx"])
+        marp_bin = resolve_binary("marp", ["/usr/local/bin/marp", "/usr/bin/marp"])
+        if shutil.which(marp_bin) or (Path(marp_bin).is_file() and os.access(marp_bin, os.X_OK)):
+            marp_cmd = [marp_bin, str(markdown_report_path), "--pdf", "--allow-local-files", "-o", str(pdf_report_path)]
+        else:
+            marp_cmd = [npx_bin, "@marp-team/marp-cli", str(markdown_report_path), "--pdf", "--allow-local-files", "-o", str(pdf_report_path)]
+
         subprocess.run(marp_cmd, check=True, capture_output=True, text=True)
 
         if not pdf_report_path.exists():

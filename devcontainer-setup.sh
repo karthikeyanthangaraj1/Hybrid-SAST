@@ -18,12 +18,10 @@ sudo apt-get install -y --no-install-recommends \
     gzip \
     ca-certificates
 
-# 2. Install Aqua Security Trivy via official deb repository
+# 2. Install Aqua Security Trivy via official installer
 echo "[+] Installing Aqua Security Trivy..."
-wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
-echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
-sudo apt-get update -y
-sudo apt-get install -y trivy
+curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
+sudo chmod 755 /usr/local/bin/trivy
 
 # 3. Configure NPM global prefix in /usr/local and install CLI tools
 echo "[+] Configuring global NPM directory in /usr/local..."
